@@ -12,9 +12,32 @@ export default function ResultComponent({ result, loading }) {
   }
   if (!result) return null;
 
+  // Handle error result
+  if (result.error) {
+    return (
+      <div className="bg-white rounded-lg shadow-lg border border-red-200 p-6 mt-8 max-w-2xl mx-auto">
+        <h2 className="text-lg font-semibold text-red-600 mb-4">Error</h2>
+        <div className="mb-2 text-red-700">{result.error}</div>
+        {result.raw_response && (
+          <details className="mt-2">
+            <summary className="cursor-pointer text-xs text-gray-500">Show raw backend output</summary>
+            <pre className="text-xs text-gray-500 bg-gray-100 p-2 rounded">{result.raw_response}</pre>
+          </details>
+        )}
+        {result.exception && (
+          <div className="mt-2 text-xs text-gray-400">Exception: {result.exception}</div>
+        )}
+      </div>
+    );
+  }
+
+  // Normal result rendering
   return (
-    <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-6 mt-8 max-w-2xl mx-auto">
+    <div className="bg-white rounded-lg shadow-lg border border-gray-200 p-6 mt-8 max-w-2xl mx-auto">
       <h2 className="text-lg font-semibold text-gray-900 mb-4">Result</h2>
+      {result.summary && (
+        <div className="mb-4 text-lg font-bold text-blue-700">{result.summary}</div>
+      )}
       <div className="mb-2">
         <span className="font-medium">Decision:</span>{" "}
         <span className={result.decision === "approved" ? "text-green-600 font-bold" : "text-red-600 font-bold"}>
@@ -23,7 +46,7 @@ export default function ResultComponent({ result, loading }) {
       </div>
       <div className="mb-2">
         <span className="font-medium">Amount:</span>{" "}
-        <span>{result.amount}</span>
+        <span>{result.amount !== undefined && result.amount !== null && result.amount !== "" ? result.amount : "N/A"}</span>
       </div>
       {result.justification && (
         <div className="mb-2">
@@ -32,10 +55,9 @@ export default function ResultComponent({ result, loading }) {
             <ul className="list-disc ml-6 mt-1 text-gray-700">
               {result.justification.clauses.map((clause, idx) => (
                 <li key={idx}>
-                  <span className="font-mono">{clause.text}</span>
-                  {clause.reference && (
-                    <span className="ml-2 text-xs text-gray-500">({clause.reference})</span>
-                  )}
+                  <span className="font-mono">{clause.reference ? (
+                    <span title={clause.text} className="underline cursor-help">{clause.reference}</span>
+                  ) : clause.text}</span>
                 </li>
               ))}
             </ul>

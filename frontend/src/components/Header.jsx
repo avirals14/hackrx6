@@ -20,7 +20,7 @@ export default function Header() {
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-3">
             <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-white">
-              <Image src={logo} alt="PolicyLens Logo" width={32} height={32} />
+              <Image src={logo} alt="PolicyLens Logo" height={32} />
             </div>
             <h1 className="text-xl font-bold text-gray-900">
               PolicyLens

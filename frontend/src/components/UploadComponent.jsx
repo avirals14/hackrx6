@@ -4,6 +4,7 @@ import { useState, useRef } from 'react';
 export default function UploadComponent({ uploadedFiles, setUploadedFiles, onUploadSuccess }) {
   const [isDragOver, setIsDragOver] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState('pending'); // 'pending' | 'uploading' | 'uploaded'
   const fileInputRef = useRef(null);
 
   const handleDragOver = (e) => {
@@ -44,7 +45,7 @@ export default function UploadComponent({ uploadedFiles, setUploadedFiles, onUpl
     }
 
     setUploadedFiles(prev => [...prev, ...validFiles]);
-    // TODO: Upload files to backend
+    setUploadStatus('pending');
   };
 
   const removeFile = (index) => {
@@ -54,11 +55,34 @@ export default function UploadComponent({ uploadedFiles, setUploadedFiles, onUpl
   const uploadFiles = async () => {
     if (uploadedFiles.length === 0) return;
     setIsUploading(true);
-    setTimeout(() => {
-      setIsUploading(false);
-      if (onUploadSuccess) onUploadSuccess(uploadedFiles.length);
-      // Optionally clear files: setUploadedFiles([]);
-    }, 1000);
+    setUploadStatus('uploading');
+    let successCount = 0;
+    for (const file of uploadedFiles) {
+      const formData = new FormData();
+      formData.append('file', file);
+      try {
+        const res = await fetch('http://localhost:8000/upload', {
+          method: 'POST',
+          body: formData,
+        });
+        if (res.ok) {
+          successCount++;
+        } else {
+          const err = await res.json();
+          alert(`Failed to upload ${file.name}: ${err.error || res.statusText}`);
+        }
+      } catch (err) {
+        alert(`Failed to upload ${file.name}: ${err.message}`);
+      }
+    }
+    setIsUploading(false);
+    if (onUploadSuccess && successCount > 0) onUploadSuccess(successCount);
+    if (successCount === uploadedFiles.length) {
+      setUploadStatus('uploaded');
+    } else {
+      setUploadStatus('pending');
+    }
+    // Optionally clear files: setUploadedFiles([]);
   };
 
   return (
@@ -73,9 +97,19 @@ export default function UploadComponent({ uploadedFiles, setUploadedFiles, onUpl
           </p>
         </div>
         {uploadedFiles.length > 0 && (
-          <span className="flex items-center text-green-600 font-medium">
-            <span className="inline-block w-2 h-2 bg-green-500 rounded-full mr-2"></span>
-            Ready
+          <span className="flex items-center font-medium">
+            <span className={`inline-block w-2 h-2 rounded-full mr-2 ${
+              uploadStatus === 'uploaded'
+                ? 'bg-green-500'
+                : uploadStatus === 'uploading'
+                ? 'bg-yellow-500'
+                : 'bg-gray-400'
+            }`}></span>
+            {uploadStatus === 'uploaded'
+              ? 'Uploaded'
+              : uploadStatus === 'uploading'
+              ? 'Uploading...'
+              : 'Ready'}
           </span>
         )}
       </div>

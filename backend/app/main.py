@@ -7,8 +7,18 @@ from app.services.vectorstore import store_in_chroma, get_chroma_collection
 from app.services.llm import run_llm_reasoning
 from app.services.model_router import choose_model
 import json
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+
+# Add CORS middleware for frontend integration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"]
+)
 
 # Placeholder for /upload route
 @app.post("/upload")

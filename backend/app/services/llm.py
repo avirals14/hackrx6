@@ -1,6 +1,9 @@
 import json
 import re
 from typing import Any, Dict, List
+import logging
+import os
+from dotenv import load_dotenv
 
 try:
     import ollama
@@ -17,16 +20,32 @@ try:
 except ImportError:
     rapidjson = None
 
+import google.generativeai as genai
+
+# Load .env for Gemini API key
+load_dotenv(dotenv_path="backend/.env")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("llm_parser")
+
 def build_reasoning_prompt(structured_query: Dict[str, Any], retrieved_chunks: List[Dict[str, Any]]) -> str:
     prompt = (
         "You are an expert insurance policy assistant.\n"
-        "Given the following structured query and relevant policy document clauses, reason step by step and output a JSON with fields: decision, amount, justification (with clauses and explanation).\n"
+        "Given the following structured query and relevant policy document clauses, reason step by step and output a JSON with fields: decision, amount, justification (with clauses and explanation), summary.\n"
         f"Structured Query: {json.dumps(structured_query)}\n"
         f"Relevant Clauses:\n"
     )
     for idx, chunk in enumerate(retrieved_chunks, 1):
         prompt += f"Clause {idx}: {chunk['text']}\n"
-    prompt += "\nRespond with a valid JSON object only, using double quotes for all keys and string values, double quotes around all array elements, no trailing commas, and do not include any explanation, comments, or text before or after the JSON. Ensure all braces are closed."
+    prompt += (
+        "\nRespond only with a valid JSON object. "
+        "Do NOT include code fences, markdown, or any explanation. "
+        "Do NOT include comments. Your entire output must be a single valid JSON object like: "
+        '{"decision": "approved", "amount": 0, "justification": "X", "summary": "Y"}\n'
+        "Format: json"
+    )
     return prompt
 
 
@@ -54,23 +73,20 @@ def run_llm_with_fallback(prompt: str, primary_model: str, fallback_model: str =
 
 
 def extract_json_from_response(content: str) -> dict:
-    # Remove code block markers if present
+    logger.info("Trying regex+json.loads for LLM output...")
+    logger.debug(f"Raw LLM output: {content}")
     content = content.strip()
     if content.startswith('```'):
         content = content.strip('`\n')
-    # Remove lines that are just ellipses or non-JSON tokens
     cleaned_lines = []
     for line in content.splitlines():
         line = line.strip()
-        # Skip lines that are just '...', '…', or empty
         if line in {'...', '…', ''}:
             continue
-        # Skip lines that look like comments or explanations
         if line.startswith('#') or line.lower().startswith('note') or line.lower().startswith('explanation'):
             continue
         cleaned_lines.append(line)
     cleaned_content = '\n'.join(cleaned_lines)
-    # Find the first {...} block in the cleaned response
     match = re.search(r'\{[\s\S]*?\}', cleaned_content)
     if match:
         return json.loads(match.group(0))
@@ -78,11 +94,13 @@ def extract_json_from_response(content: str) -> dict:
 
 
 def repair_with_llm(raw_content: str) -> dict:
-    """Attempt to repair malformed JSON using the local LLM."""
+    logger.info("Trying LLM repair for LLM output...")
     if not ollama:
         raise ImportError("ollama is not installed.")
     repair_prompt = (
-        "Convert the following text into valid JSON. Only return the JSON object.\n"
+        "Convert the following text into valid JSON. Only return the JSON object. "
+        "Use double quotes for all keys and string values. No comments, explanations, or text before/after the JSON. "
+        "Arrays must contain only double-quoted strings or numbers. No trailing commas. Ensure all braces are closed.\n"
         f"Text: {raw_content}"
     )
     response = ollama.chat(
@@ -90,71 +108,121 @@ def repair_with_llm(raw_content: str) -> dict:
         messages=[{"role": "user", "content": repair_prompt}]
     )
     content = response["message"]["content"].strip()
-    # Try to parse the result as JSON
+    logger.debug(f"LLM repair output: {content}")
     try:
         return json.loads(content)
     except Exception:
-        # Try demjson3 or rapidjson as a last resort
         if demjson3:
             try:
+                logger.info("Trying demjson3 for LLM repair output...")
                 return demjson3.decode(content)
             except Exception:
                 pass
         if rapidjson:
             try:
+                logger.info("Trying rapidjson for LLM repair output...")
                 return rapidjson.loads(content)
             except Exception:
                 pass
         raise ValueError("LLM repair failed to produce valid JSON.")
 
 
+def repair_with_gemini(raw_content: str, api_key: str = None) -> dict:
+    if not api_key:
+        api_key = GEMINI_API_KEY
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel("gemini-pro")
+    prompt = (
+        "You are a JSON repair and validation assistant. "
+        "Given the following text, return only a valid JSON object. "
+        "Do NOT include any explanation, comments, or text before/after the JSON. "
+        "If the input is already valid JSON, return it unchanged. "
+        "Input:\n"
+        f"{raw_content}"
+    )
+    response = model.generate_content(prompt)
+    content = response.text.strip()
+    try:
+        return json.loads(content)
+    except Exception as e:
+        raise ValueError(f"Gemini Pro failed to produce valid JSON: {e}\nRaw output: {content}")
+
+
 def run_llm_reasoning(structured_query: Dict[str, Any], retrieved_chunks: List[Dict[str, Any]], primary_model: str = "llama3:8b", fallback_model: str = "gemma3n:e2b") -> Dict[str, Any]:
     prompt = build_reasoning_prompt(structured_query, retrieved_chunks)
     content = run_llm_with_fallback(prompt, primary_model, fallback_model)
-    # Try to extract JSON from the response
+    logger.info("Received LLM output. Attempting to parse...")
+    logger.debug(f"Raw LLM output: {content}")
     try:
         result = extract_json_from_response(content)
+        logger.info("Parsed LLM output with regex+json.loads.")
     except Exception as e:
-        # Try to repair with demjson3 if available
         if demjson3:
             try:
+                logger.info("Trying demjson3 for LLM output...")
                 result = demjson3.decode(content)
+                logger.info("Parsed LLM output with demjson3.")
             except Exception as e2:
-                # Try rapidjson if available
                 if rapidjson:
                     try:
+                        logger.info("Trying rapidjson for LLM output...")
                         result = rapidjson.loads(content)
+                        logger.info("Parsed LLM output with rapidjson.")
                     except Exception as e3:
-                        # Try LLM repair as last resort
                         try:
                             result = repair_with_llm(content)
+                            logger.info("Parsed LLM output with LLM repair.")
                         except Exception as e4:
-                            return {"error": "Failed to parse and repair LLM response (demjson3, rapidjson, LLM)", "raw_response": content, "exception": f"{e}; Repair failed: {e2}; RapidJSON failed: {e3}; LLM failed: {e4}"}
+                            try:
+                                logger.info("Trying Gemini Pro for LLM output...")
+                                result = repair_with_gemini(content)
+                                logger.info("Parsed LLM output with Gemini Pro.")
+                            except Exception as e5:
+                                logger.error(f"All repair steps failed: {e}; {e2}; {e3}; {e4}; {e5}")
+                                return {"error": "Failed to parse and repair LLM response (demjson3, rapidjson, LLM, Gemini)", "raw_response": content, "exception": f"{e}; Repair failed: {e2}; RapidJSON failed: {e3}; LLM failed: {e4}; Gemini failed: {e5}"}
                 else:
-                    # Try LLM repair as last resort
                     try:
                         result = repair_with_llm(content)
+                        logger.info("Parsed LLM output with LLM repair.")
                     except Exception as e4:
-                        return {"error": "Failed to parse and repair LLM response (demjson3, LLM)", "raw_response": content, "exception": f"{e}; Repair failed: {e2}; LLM failed: {e4}"}
+                        try:
+                            logger.info("Trying Gemini Pro for LLM output...")
+                            result = repair_with_gemini(content)
+                            logger.info("Parsed LLM output with Gemini Pro.")
+                        except Exception as e5:
+                            logger.error(f"All repair steps failed: {e}; {e2}; {e4}; {e5}")
+                            return {"error": "Failed to parse and repair LLM response (demjson3, LLM, Gemini)", "raw_response": content, "exception": f"{e}; Repair failed: {e2}; LLM failed: {e4}; Gemini failed: {e5}"}
         elif rapidjson:
             try:
+                logger.info("Trying rapidjson for LLM output...")
                 result = rapidjson.loads(content)
+                logger.info("Parsed LLM output with rapidjson.")
             except Exception as e3:
-                # Try LLM repair as last resort
                 try:
                     result = repair_with_llm(content)
+                    logger.info("Parsed LLM output with LLM repair.")
                 except Exception as e4:
-                    return {"error": "Failed to parse and repair LLM response (rapidjson, LLM)", "raw_response": content, "exception": f"{e}; RapidJSON failed: {e3}; LLM failed: {e4}"}
+                    try:
+                        logger.info("Trying Gemini Pro for LLM output...")
+                        result = repair_with_gemini(content)
+                        logger.info("Parsed LLM output with Gemini Pro.")
+                    except Exception as e5:
+                        logger.error(f"All repair steps failed: {e}; {e3}; {e4}; {e5}")
+                        return {"error": "Failed to parse and repair LLM response (rapidjson, LLM, Gemini)", "raw_response": content, "exception": f"{e}; RapidJSON failed: {e3}; LLM failed: {e4}; Gemini failed: {e5}"}
         else:
-            # Try LLM repair as last resort
             try:
                 result = repair_with_llm(content)
+                logger.info("Parsed LLM output with LLM repair.")
             except Exception as e4:
-                return {"error": "Failed to parse and repair LLM response (LLM)", "raw_response": content, "exception": f"{e}; LLM failed: {e4}"}
-    # Add a summary field for user-facing applications
+                try:
+                    logger.info("Trying Gemini Pro for LLM output...")
+                    result = repair_with_gemini(content)
+                    logger.info("Parsed LLM output with Gemini Pro.")
+                except Exception as e5:
+                    logger.error(f"All repair steps failed: {e}; {e4}; {e5}")
+                    return {"error": "Failed to parse and repair LLM response (LLM, Gemini)", "raw_response": content, "exception": f"{e}; LLM failed: {e4}; Gemini failed: {e5}"}
     summary = None
     if isinstance(result, dict):
-        # Try to use a plain-language answer if present
         if "decision" in result and isinstance(result["decision"], str):
             summary = result["decision"]
         elif "justification" in result and isinstance(result["justification"], str):
