@@ -1,1 +1,0 @@
-# embedder.py - Utilities for generating embeddings from text 
