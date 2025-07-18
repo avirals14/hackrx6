@@ -64,7 +64,7 @@ export default function Home() {
           {/* Show last query and parsed query */}
           {lastQuery && (
             <div className="mb-4 bg-white rounded shadow p-4 border border-gray-100">
-              <span className="font-medium">Query:</span> <span className="text-gray-700">"{lastQuery}"</span>
+              <span className="font-medium">Query:</span> <span className="text-gray-700">&quot;{lastQuery}&quot;</span>
               {result?.structured_query && (
                 <div className="mt-2 text-xs text-gray-500">
                   <span className="font-medium">Parsed:</span> {JSON.stringify(result.structured_query)}
