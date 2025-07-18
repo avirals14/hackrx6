@@ -209,10 +209,10 @@ export default function UploadComponent({ uploadedFiles, setUploadedFiles, onUpl
             </svg>
             Uploading...
           </>
-        ) : uploadedFiles.length > 0 ? (
+        ) : uploadStatus === 'uploaded' ? (
           <>
             <span className="inline-block w-2 h-2 bg-green-500 rounded-full mr-2"></span>
-            Uploaded 
+            Uploaded
           </>
         ) : (
           <>Upload Files</>
