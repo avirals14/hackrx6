@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from app.services.parser import parse_file
 from app.services.embedder import generate_embeddings
 from app.services.vectorstore import store_in_chroma, get_chroma_collection
-from app.services.llm import run_llm_reasoning
+from app.services.llm import run_llm_with_priority
 from app.services.model_router import choose_model
 import json
 from fastapi.middleware.cors import CORSMiddleware
@@ -42,18 +42,37 @@ async def upload_file(file: UploadFile = File(...)):
 class QueryRequest(BaseModel):
     query: str
 
+# Add a helper to safely parse and validate the LLM response
+
+def safe_parse_llm_response(response):
+    try:
+        data = json.loads(response)
+        # Ensure all required fields are present
+        for field in ["decision", "amount", "justification", "summary", "clauses_used", "confidence"]:
+            if field not in data:
+                raise ValueError("Missing field")
+        return data
+    except Exception:
+        # Fallback/default response
+        return {
+            "decision": "needs more info",
+            "amount": 0,
+            "justification": "The LLM response was incomplete or invalid. Manual review required.",
+            "clauses_used": [],
+            "summary": "Unable to determine decision automatically.",
+            "confidence": 0.0
+        }
+
 # Placeholder for /query route
 @app.post("/query")
 async def process_query(request: QueryRequest):
     try:
-        # 1. Parse/structure the query using Gemma (LLM)
-        from app.services.llm import run_llm_with_fallback, run_llm_reasoning
-        parsing_model = choose_model("parsing")
+        # 1. Parse/structure the query using LLM priority (OpenAI > Gemini > Ollama)
         parsing_prompt = (
-            "Extract the following fields from the query and return as JSON: age, procedure, location, policy_duration_months. "
+            "Extract the following fields from the query and return as JSON: age, gender, procedure, location, policy_duration_months, policy_name, policy_id. "
             "If a field is missing, use null. Query: " + request.query + "\nRespond in JSON only."
         )
-        parsing_response = run_llm_with_fallback(parsing_prompt, parsing_model)
+        parsing_response = run_llm_with_priority(parsing_prompt)
         try:
             structured_query = json.loads(parsing_response)
         except Exception:
@@ -74,10 +93,11 @@ async def process_query(request: QueryRequest):
             for doc, meta in zip(results["documents"][0], results["metadatas"][0])
         ]
 
-        # 4. LLM reasoning using LLaMA 3, fallback to Gemma
-        reasoning_model = choose_model("reasoning")
-        fallback_model = choose_model("parsing")
-        llm_response = run_llm_reasoning(structured_query, retrieved_chunks, primary_model=reasoning_model, fallback_model=fallback_model)
+        # 4. Reasoning using LLM priority (OpenAI > Gemini > Ollama) with improved prompt
+        from app.services.llm import build_reasoning_prompt
+        reasoning_prompt = build_reasoning_prompt(structured_query, retrieved_chunks)
+        llm_response = run_llm_with_priority(reasoning_prompt)
+        llm_response = safe_parse_llm_response(llm_response)
 
         return {
             "structured_query": structured_query,
